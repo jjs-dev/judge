@@ -7,6 +7,9 @@ then
 elif [ "$GITHUB_REF" = "refs/heads/trying" ]
 then
   TAG="dev"
+elif [ "$GITHUB_REF" = "refs/heads/staging" ]
+then
+  exit 0
 else
   echo "unknown GITHUB_REF: $GITHUB_REF"
   exit 1
