@@ -1,0 +1,7 @@
+[bans]
+multiple-versions = "warn"
+
+[licenses]
+allow-osi-fsf-free = "both"
+allow = ["Unlicense"]
+unlicensed = "warn"
