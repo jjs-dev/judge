@@ -1,0 +1,13 @@
+[package]
+name = "judgectl"
+version = "0.1.0"
+authors = ["Mikail Bagishov <bagishov.mikail@yandex.ru>"]
+edition = "2018"
+
+[dependencies]
+anyhow = "1.0.40"
+clap = "3.0.0-beta.2"
+reqwest = { version = "0.11.3", features = ["json"] }
+serde_json = "1.0.64"
+tokio = { version = "1.5.0", features = ["rt", "rt-multi-thread", "macros", "time"] }
+judge-apis = { path = "../judge-apis" }

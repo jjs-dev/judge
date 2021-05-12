@@ -1,0 +1,11 @@
+[package]
+name = "invoker-client"
+version = "0.1.0"
+authors = ["Mikail Bagishov <bagishov.mikail@yandex.ru>"]
+edition = "2018"
+
+[dependencies]
+anyhow = "1.0.40"
+invoker-api = { git = "https://github.com/jjs-dev/invoker" }
+reqwest = { version = "0.11.3", features = ["json"] }
+uuid = { version = "0.8.2", features = ["v4"] }

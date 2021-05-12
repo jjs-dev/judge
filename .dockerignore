@@ -1,0 +1,6 @@
+/.github
+/ci
+/target
+/setup-data
+Dockerfile
+docker-compose.yml

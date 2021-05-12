@@ -1,0 +1,143 @@
+# GENERATED FILE DO NOT EDIT
+name: ci
+"on":
+  pull_request: {}
+  push:
+    branches:
+    - staging
+    - trying
+    - master
+jobs:
+  e2e-build:
+    env:
+      DOCKER_BUILDKIT: "1"
+    runs-on: ubuntu-20.04
+    timeout-minutes: 15
+    steps:
+    - name: Fetch sources
+      uses: actions/checkout@v2
+    - name: Setup cache
+      uses: Swatinem/rust-cache@v1
+    - name: Build e2e artifacts
+      run: bash ci/e2e-build.sh
+    - name: Upload e2e artifacts
+      uses: actions/upload-artifact@v2
+      with:
+        name: e2e-artifacts
+        path: e2e-artifacts
+        retention-days: "2"
+  e2e-run:
+    needs: e2e-build
+    runs-on: ubuntu-20.04
+    timeout-minutes: 15
+    steps:
+    - name: Fetch sources
+      uses: actions/checkout@v2
+    - name: Download e2e artifacts
+      uses: actions/download-artifact@v2
+      with:
+        name: e2e-artifacts
+        path: e2e-artifacts
+    - name: Execute tests
+      run: bash ci/e2e-run.sh
+    - name: Upload logs
+      uses: actions/upload-artifact@v2
+      with:
+        name: e2e-logs
+        path: e2e-logs
+        retention-days: "2"
+  misspell:
+    runs-on: ubuntu-20.04
+    timeout-minutes: 2
+    steps:
+    - name: Fetch sources
+      uses: actions/checkout@v2
+    - name: run spellcheck
+      uses: reviewdog/action-misspell@v1
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        locale: US
+  rust-cargo-deny:
+    name: rust-cargo-deny
+    runs-on: ubuntu-20.04
+    timeout-minutes: 15
+    steps:
+    - name: Fetch sources
+      uses: actions/checkout@v2
+    - name: Run cargo-deny
+      uses: EmbarkStudios/cargo-deny-action@v1
+      with:
+        command: check all
+  rust-lint:
+    name: rust-lint
+    runs-on: ubuntu-20.04
+    timeout-minutes: 15
+    steps:
+    - name: Fetch sources
+      uses: actions/checkout@v2
+    - name: Run clippy
+      uses: actions-rs/cargo@v1
+      with:
+        args: --workspace -- -Dwarnings
+        command: clippy
+  rust-unit-tests:
+    name: rust-unit-tests
+    runs-on: ubuntu-20.04
+    timeout-minutes: 15
+    steps:
+    - name: Fetch sources
+      uses: actions/checkout@v2
+    - name: Setup cache
+      uses: Swatinem/rust-cache@v1
+    - name: Run unit tests
+      uses: actions-rs/cargo@v1
+      with:
+        command: test
+  rust-unused-deps:
+    name: rust-unused-deps
+    runs-on: ubuntu-20.04
+    timeout-minutes: 15
+    steps:
+    - name: Fetch sources
+      uses: actions/checkout@v2
+    - name: Install nightly toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        components: clippy,rustfmt
+        override: "true"
+        toolchain: nightly
+    - name: Setup cache
+      uses: Swatinem/rust-cache@v1
+    - id: cargo_udeps
+      name: Fetch prebuilt cargo-udeps
+      uses: actions/cache@v2
+      with:
+        key: udeps-bin-${{ runner.os }}-v0.1.21
+        path: ~/udeps
+    - name: Install cargo-udeps
+      if: steps.cache_udeps.outputs.cache-hit != 'true'
+      run: |2-
+
+        cargo install cargo-udeps --locked --version 0.1.21
+        mkdir -p ~/udeps
+        cp $( which cargo-udeps ) ~/udeps
+    - name: Run cargo-udeps
+      run: "\nexport PATH=~/udeps:$PATH  \ncargo udeps \n"
+  rustfmt:
+    name: rustfmt
+    runs-on: ubuntu-20.04
+    timeout-minutes: 15
+    steps:
+    - name: Fetch sources
+      uses: actions/checkout@v2
+    - name: Install nightly toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        components: clippy,rustfmt
+        override: "true"
+        toolchain: nightly
+    - name: Check formatting
+      uses: actions-rs/cargo@v1
+      with:
+        args: -- --check
+        command: fmt

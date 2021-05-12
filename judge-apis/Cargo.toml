@@ -1,0 +1,12 @@
+[package]
+name = "judge-apis"
+version = "0.1.0"
+authors = ["Mikail Bagishov <bagishov.mikail@yandex.ru>"]
+edition = "2018"
+
+[dependencies]
+serde = { version = "1.0.125", features = ["derive"] }
+pom = { git = "https://github.com/jjs-dev/pps", branch = "master" }
+valuer-api = { git = "https://github.com/jjs-dev/pps", branch = "master" }
+base64 = "0.13.0"
+uuid = { version = "0.8.2", features = ["serde"] }

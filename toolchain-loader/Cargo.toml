@@ -1,0 +1,13 @@
+[package]
+name = "toolchain-loader"
+version = "0.1.0"
+authors = ["Mikail Bagishov <bagishov.mikail@yandex.ru>"]
+edition = "2018"
+
+[dependencies]
+anyhow = "1.0.40"
+serde = { version = "1.0.125", features = ["derive"] }
+tracing = "0.1.26"
+pom = { git = "https://github.com/jjs-dev/pps", branch = "master" }
+tokio = { version = "1.5.0", features = ["fs"] }
+serde_yaml = "0.8.17"

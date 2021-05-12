@@ -1,0 +1,23 @@
+[package]
+name = "processor"
+version = "0.1.0"
+authors = ["Mikail Bagishov <bagishov.mikail@yandex.ru>"]
+edition = "2018"
+
+[dependencies]
+serde = { version = "1.0.125", features = ["derive"] }
+pom = { git = "https://github.com/jjs-dev/pps", branch = "master" }
+valuer-api = { git = "https://github.com/jjs-dev/pps", branch = "master" }
+anyhow = "1.0.40"
+tracing = "0.1.25"
+tokio = { version = "1.5.0", features = ["process", "io-util"] }
+judge-apis = { path = "../judge-apis" }
+invoker-api = { git = "https://github.com/jjs-dev/invoker" }
+uuid = "0.8.2"
+invoker-client = { path = "../invoker-client" }
+toolchain-loader = { path = "../toolchain-loader" }
+problem-loader = { path = "../problem-loader" }
+serde_json = "1.0.64"
+valuer-client = { path = "../valuer-client" }
+strum = { version = "0.20.0", features = ["derive"] }
+base64 = "0.13.0"

@@ -1,0 +1,25 @@
+[workspace]
+members = ["judgectl", "processor", "problem-loader", "toolchain-loader", "valuer-client", "judge-apis", "invoker-client"]
+
+[package]
+name = "judge"
+version = "0.1.0"
+authors = ["Mikail Bagishov <bagishov.mikail@yandex.ru>"]
+edition = "2018"
+
+[dependencies]
+anyhow = "1.0.40"
+clap = "3.0.0-beta.2"
+tokio = { version = "1.5.0", features = ["macros", "rt-multi-thread"] }
+tracing = "0.1.25"
+tracing-subscriber = "0.2.17"
+uuid = { version = "0.8.2", features = ["serde", "v4"] }
+judge-apis = { path = "judge-apis" }
+processor = { path = "processor" }
+warp = "0.3.1"
+base64 = "0.13.0"
+futures = "0.3.14"
+api-util = { git = "https://github.com/jjs-dev/commons" }
+invoker-client = { path = "./invoker-client" }
+toolchain-loader = { path = "./toolchain-loader" }
+problem-loader = { path = "./problem-loader" }

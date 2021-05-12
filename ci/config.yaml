@@ -1,0 +1,3 @@
+dockerImages:
+  - judge
+buildTimeoutMinutes: 15

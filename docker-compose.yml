@@ -1,0 +1,56 @@
+services:
+    judge:
+        build:
+            context: .
+            args:
+                RELEASE: '--release'
+        command:
+            - --invoker=http://invoker:8000
+            - --port=1789
+            - --problems-source-dir=/etc/jjs/problems
+            - --toolchains=/etc/jjs/toolchains
+        volumes:
+            - problems:/etc/jjs/problems:ro
+            - toolchains:/etc/jjs/toolchains:ro
+        ports: 
+            - '1789:1789'
+    setup:
+        build: setup
+        volumes:
+            - ./setup-data/problems:/etc/problems:ro
+            - ./setup-data/toolchains:/etc/toolchains:ro
+            - problems:/var/problems
+            - toolchains:/var/toolchains
+    invoker:
+        image: ghcr.io/jjs-dev/jjs-invoker:latest
+        # TODO: investigate why this is required
+        privileged: true
+        environment: 
+            RUST_LOG: info,invoker=debug
+        command:
+            - --shim=http://shim:8001
+            - --listen-address=tcp://0.0.0.0:8000
+            - --work-dir=/var/invoker/work
+        volumes: 
+            - pulled:/var/shim-share
+        expose: 
+            - 8000
+    shim:
+        image: ghcr.io/jjs-dev/jjs-invoker-shim:latest
+        environment: 
+            RUST_LOG: info
+        command:
+            - --allow-remote
+            - --port=8001
+            - --exchange-dir=/var/shim-share
+            - --invoker-exchange-dir=/var/shim-share
+        volumes:
+            - pulled:/var/shim-share
+        expose:
+            - 8001
+        healthcheck:
+            disable: true
+volumes:
+    pulled: {}
+    problems: {}
+    toolchains: {}

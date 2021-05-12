@@ -1,0 +1,28 @@
+# GENERATED FILE DO NOT EDIT
+name: meta
+"on":
+  pull_request: {}
+  push:
+    branches:
+    - staging
+    - trying
+    - master
+jobs:
+  check-ci-config:
+    runs-on: ubuntu-20.04
+    timeout-minutes: 1
+    steps:
+    - name: Fetch sources
+      uses: actions/checkout@v2
+    - name: Install golang
+      uses: actions/setup-go@v2
+      with:
+        go-version: 1.16.4
+    - name: Fetch generator sources
+      run: git clone https://github.com/jjs-dev/ci-config-gen ./gen
+    - name: Install ci-config-gen
+      run: cd ./gen && go install -v .
+    - name: Run co-config-gen
+      run: ci-config-gen --repo-root .
+    - name: Verify CI configuration is up-to-date
+      run: git diff --exit-code
