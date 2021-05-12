@@ -102,7 +102,7 @@ pub fn judge(req: Request, clients: Clients) -> JobProgress {
         }
         .in_current_span(),
     );
-    JobProgress { done_rx, events_rx }
+    JobProgress { events_rx, done_rx }
 }
 
 /// Can be used to view judge job progress

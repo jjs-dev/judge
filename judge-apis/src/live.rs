@@ -9,5 +9,5 @@ pub struct LiveJudgeStatus {
     /// it is unspecified which is returned
     pub test: Option<u32>,
     /// Current score. None if no estimates were provided yet.
-    pub score: Option<u32>
+    pub score: Option<u32>,
 }

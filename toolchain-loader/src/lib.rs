@@ -19,7 +19,7 @@ pub struct Toolchain {
 pub struct ToolchainSpec {
     /// Human-readable
     pub title: String,
-    
+
     /// Machine-readable
     pub name: String,
 

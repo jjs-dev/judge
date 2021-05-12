@@ -171,7 +171,7 @@ pub async fn serve(cfg: RestConfig, clients: processor::Clients) -> anyhow::Resu
                 .map_err(|err| warp::reject::custom(api_util::AnyhowRejection(err)))
         })
         .map(|resp| warp::reply::json(&resp))
-        .recover(|rej| api_util::recover(rej))
+        .recover(api_util::recover)
         .boxed();
 
     let route_get_log = warp::get()
@@ -185,7 +185,7 @@ pub async fn serve(cfg: RestConfig, clients: processor::Clients) -> anyhow::Resu
                 .map_err(|err| warp::reject::custom(api_util::AnyhowRejection(err)))
         })
         .map(|resp| warp::reply::json(&resp))
-        .recover(|rej| api_util::recover(rej))
+        .recover(api_util::recover)
         .boxed();
 
     let routes = route_create_job.or(route_get_job).or(route_get_log);

@@ -1,7 +1,7 @@
-use serde::{Deserialize, Serialize, de::Error};
+use crate::live::LiveJudgeStatus;
+use serde::{de::Error, Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
-use crate::live::LiveJudgeStatus;
 
 /// Base64 encoding for binary data
 pub struct ByteString(pub Vec<u8>);
