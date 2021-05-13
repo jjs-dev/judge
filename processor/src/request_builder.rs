@@ -26,6 +26,7 @@ impl RequestBuilder {
     pub async fn read_output_data(&self, out: &OutputData) -> anyhow::Result<Vec<u8>> {
         match out {
             OutputData::InlineBase64(b) => base64::decode(b).context("invalid base64"),
+            OutputData::None => anyhow::bail!("output is None"),
         }
     }
 

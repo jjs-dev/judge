@@ -73,17 +73,19 @@ impl Loader {
         }
         tracing::info!("cache miss");
         // cache for this problem not found, let's load it.
-        let assets_path = self.cache_dir.join(problem_name);
-        tokio::fs::remove_dir_all(&assets_path).await.ok();
-        tokio::fs::create_dir(&assets_path).await.with_context(|| {
-            format!(
-                "failed to prepare problem assets directory at {}",
-                assets_path.display()
-            )
-        })?;
+        let problem_path = self.cache_dir.join(problem_name);
+        tokio::fs::remove_dir_all(&problem_path).await.ok();
+        tokio::fs::create_dir(&problem_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to prepare problem assets directory at {}",
+                    problem_path.display()
+                )
+            })?;
         for registry in &self.registries {
             let res = registry
-                .get_problem(problem_name, &assets_path)
+                .get_problem(problem_name, &problem_path)
                 .await
                 .with_context(|| {
                     format!(
@@ -98,6 +100,7 @@ impl Loader {
                     registry_name = registry.name(),
                     "successfully resolved problem"
                 );
+                let assets_path = problem_path.join("assets");
                 cache.items.insert(
                     problem_name.to_string(),
                     ProblemCacheItem {

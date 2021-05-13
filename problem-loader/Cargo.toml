@@ -14,7 +14,7 @@ tokio = { version = "1.5.0", features = ["fs", "sync"] }
 fs_extra = "1.2.0"
 mongodb = { git = "https://github.com/mongodb/mongo-rust-driver" }
 url = "2.2.1"
-bson = { git = "https://github.com/mongodb/bson-rust" }
+bson = "2.0.0-beta"
 flate2 = "1.0.20"
 tar = "0.4.33"
 serde = "1.0.125"

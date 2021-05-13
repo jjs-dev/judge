@@ -45,6 +45,7 @@ impl JudgeJob {
 struct State {
     judge: RwLock<HashMap<Uuid, Arc<Mutex<JudgeJob>>>>,
     clients: processor::Clients,
+    settings: processor::Settings,
 }
 
 async fn start_job(
@@ -56,8 +57,16 @@ async fn start_job(
         problem_id: req.problem_id,
         run_source: req.run_source.0,
     };
-    let mut progress = processor::judge(proc_request, state.clients.clone());
     let job_id = Uuid::new_v4();
+    let mut settings = state.settings.clone();
+    {
+        let mut job_id_s = Uuid::encode_buffer();
+        let job_id_s = job_id.to_hyphenated().encode_lower(&mut job_id_s);
+        if let Some(p) = &mut settings.checker_logs {
+            p.push(&*job_id_s);
+        }
+    }
+    let mut progress = processor::judge(proc_request, state.clients.clone(), settings);
     let job = JudgeJob {
         id: job_id,
         live_test: None,
@@ -106,7 +115,7 @@ async fn get_job(state: Arc<State>, id: Uuid) -> anyhow::Result<judge_apis::rest
                 return Err(anyhow::Error::new(ApiError::new(
                     ErrorKind::NotFound,
                     "JudgeJobNotFound",
-                )))
+                )));
             }
         }
     };
@@ -127,7 +136,7 @@ async fn get_job_judge_log(
                 return Err(anyhow::Error::new(ApiError::new(
                     ErrorKind::NotFound,
                     "JudgeJobNotFound",
-                )))
+                )));
             }
         }
     };
@@ -138,18 +147,23 @@ async fn get_job_judge_log(
             return Err(anyhow::Error::new(ApiError::new(
                 ErrorKind::NotFound,
                 "JudgeLogNotFound",
-            )))
+            )));
         }
     };
     Ok(log.clone())
 }
 
 /// Serves api
-#[tracing::instrument(skip(cfg, clients))]
-pub async fn serve(cfg: RestConfig, clients: processor::Clients) -> anyhow::Result<()> {
+#[tracing::instrument(skip(cfg, clients, settings))]
+pub async fn serve(
+    cfg: RestConfig,
+    clients: processor::Clients,
+    settings: processor::Settings,
+) -> anyhow::Result<()> {
     let state = Arc::new(State {
         judge: RwLock::new(HashMap::new()),
         clients,
+        settings,
     });
     let state2 = state.clone();
     let route_create_job = warp::post()

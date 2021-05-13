@@ -1,6 +1,5 @@
 use crate::ChildClientConfig;
 use anyhow::Context;
-use std::os::unix::io::IntoRawFd;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 pub(crate) struct ChildClient {
@@ -9,8 +8,6 @@ pub(crate) struct ChildClient {
     // ties lifetime of valuer instance to `Valuer` lifetime
     _child: tokio::process::Child,
 }
-
-const STDERR_FD: i32 = 2;
 
 impl ChildClient {
     pub(crate) async fn new(cfg: &ChildClientConfig) -> anyhow::Result<Self> {
@@ -31,19 +28,6 @@ impl ChildClient {
                 "Not setting current dir for valuer because path specified ({}) does not exists",
                 cfg.current_dir.display()
             );
-        }
-        let log = tokio::fs::File::create(&cfg.log_file)
-            .await
-            .context("failed to create valuer log file")?
-            .into_std()
-            .await
-            .into_raw_fd();
-        unsafe {
-            cmd.pre_exec(move || {
-                nix::unistd::dup3(log, STDERR_FD, nix::fcntl::OFlag::empty())
-                    .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))?;
-                Ok(())
-            });
         }
         let mut child = cmd.spawn().with_context(|| {
             format!(
