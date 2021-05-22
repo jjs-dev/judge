@@ -1,19 +1,19 @@
-use std::path::PathBuf;
-
 use child::ChildClient;
+use std::path::PathBuf;
 
 mod child;
 
 /// Data, required to create a valuer client.
 /// This is a bit lowered version of `pom::Valuer`.
+#[derive(Debug)]
 pub enum ClientConfig {
     Child(ChildClientConfig),
 }
 
+#[derive(Debug)]
 pub struct ChildClientConfig {
     pub exe: PathBuf,
     pub args: Vec<String>,
-    pub log_file: PathBuf,
     pub current_dir: PathBuf,
 }
 
@@ -26,6 +26,7 @@ pub struct ValuerClient(Inner);
 
 impl ValuerClient {
     pub async fn new(config: &ClientConfig) -> anyhow::Result<Self> {
+        tracing::info!(config = ?config, "connecting to valuer");
         let inner = match config {
             ClientConfig::Child(cfg) => Inner::Child(ChildClient::new(cfg).await?),
         };

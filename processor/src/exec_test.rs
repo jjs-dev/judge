@@ -1,15 +1,22 @@
 mod checker_proto;
 
-use std::path::PathBuf;
-
 use anyhow::Context;
-use invoker_api::invoke::{
-    Action, ActionResult, Command, EnvVarValue, EnvironmentVariable, Extensions, FileId, Input,
-    InvokeRequest, Limits, SandboxSettings, Stdio, Step,
+use invoker_api::{
+    invoke::{
+        Action, ActionResult, Command, EnvVarValue, EnvironmentVariable, Extensions, FileId, Input,
+        InvokeRequest, Limits, OutputRequest, OutputRequestTarget, PathPrefix, PrefixedPath,
+        SandboxSettings, SharedDir, SharedDirectoryMode, Stdio, Step,
+    },
+    shim::{
+        ExtraFile, RequestExtensions, SandboxSettingsExtensions, SharedDirExtensionSource,
+        EXTRA_FILES_DIR_NAME,
+    },
 };
-use tokio::io::AsyncWriteExt;
+use std::{collections::HashMap, path::PathBuf};
 use uuid::Uuid;
 use valuer_api::{status_codes, Status, StatusKind};
+
+use crate::compile::BuiltRun;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ResourceUsage {
@@ -46,42 +53,79 @@ fn map_checker_outcome_to_status(out: checker_proto::Output) -> Status {
     }
 }
 
-/// Runs Artifact on one test and produces output
-pub(crate) async fn exec(
+const PREPARE_STAGE: u32 = 0;
+const EXEC_SOLUTION_STAGE: u32 = 1;
+const TEST_DATA_INPUT_FILE: &str = "test-data";
+const EXEC_SOLUTION_OUTPUT_FILE: &str = "solution-output";
+const EXEC_SOLUTION_ERROR_FILE: &str = "solution-error";
+const CORRECT_ANSWER_FILE: &str = "correct";
+const EMPTY_FILE: &str = "empty";
+
+const SOLUTION_SANDBOX_NAME: &str = "exec-sandbox";
+const CHECKER_SANDBOX_NAME: &str = "checker-sandbox";
+
+const EXEC_CHECKER_STAGE: u32 = 2;
+
+const CHECKER_DECISION: &str = "checker-decision";
+const CHECKER_LOG: &str = "checker-logs";
+
+struct StepIds {
+    exec_solution: usize,
+    exec_checker: usize,
+}
+
+async fn create_request(
     toolchain: &toolchain_loader::Toolchain,
     problem: &pom::Problem,
-    client: invoker_client::Client,
     file_ref_resolver: &crate::FileRefResolver,
-    test_id: pom::TestId,
-    debug: &crate::DebugDumps,
-) -> anyhow::Result<ExecOutcome> {
-    let test = problem
-        .tests
-        .get(test_id.to_idx())
-        .context("unknown test")?;
+    test: &pom::Test,
+    req_builder: &crate::request_builder::RequestBuilder,
+    built: &BuiltRun,
+) -> anyhow::Result<(InvokeRequest, StepIds)> {
+    let (substitutions, extra_files) = {
+        let mut s = HashMap::new();
+        let mut ef = HashMap::new();
+        let test_path = file_ref_resolver.resolve_asset(&test.path);
+        ef.insert(
+            "exec/test".to_string(),
+            ExtraFile {
+                contents: req_builder.intern_file(&test_path).await?,
+                executable: false,
+            },
+        );
+        ef.insert(
+            "compile-out/bin".to_string(),
+            ExtraFile {
+                contents: req_builder.intern(&built.binary).await?,
+                executable: true,
+            },
+        );
+        let checker = file_ref_resolver.resolve_asset(&problem.checker_exe);
+        ef.insert(
+            "check/checker".to_string(),
+            ExtraFile {
+                contents: req_builder.intern_file(&checker).await?,
+                executable: true,
+            },
+        );
+        s.insert(
+            "Run.BinaryFilePath".to_string(),
+            "/compile-out/bin".to_string(),
+        );
+        (s, ef)
+    };
     let mut invoke_request = InvokeRequest {
         steps: vec![],
         inputs: vec![],
         outputs: vec![],
         id: Uuid::nil(),
-        ext: Extensions::default(),
+        ext: Extensions::make(RequestExtensions {
+            extra_files,
+            substitutions,
+        })?,
     };
-    let req_builder = crate::request_builder::RequestBuilder::new();
 
     let test_file = file_ref_resolver.resolve_asset(&test.path);
-    //let test_data = tokio::fs::read(input_file).await.context("failed to read test")?;
-    const PREPARE_STAGE: u32 = 0;
-    const EXEC_SOLUTION_STAGE: u32 = 1;
-    const TEST_DATA_INPUT_FILE: &str = "test-data";
-    const EXEC_SOLUTION_OUTPUT_FILE: &str = "solution-output";
-    const EXEC_SOLUTION_ERROR_FILE: &str = "solution-error";
-    const CORRECT_ANSWER_FILE: &str = "correct";
-    const EMPTY_FILE: &str = "empty";
-
-    const SOLUTION_SANDBOX_NAME: &str = "exec-sandbox";
-    const CHECKER_SANDBOX_NAME: &str = "checker-sandbox";
-
-    const EXEC_CHECKER_STAGE: u32 = 2;
     // create an input with the test data
 
     let test_data_input = Input {
@@ -107,7 +151,7 @@ pub(crate) async fn exec(
         stage: EXEC_SOLUTION_STAGE,
         action: Action::CreateFile {
             id: FileId(EXEC_SOLUTION_OUTPUT_FILE.to_string()),
-            readable: false,
+            readable: true,
             writeable: true,
         },
         ext: Extensions::default(),
@@ -116,15 +160,13 @@ pub(crate) async fn exec(
         stage: EXEC_SOLUTION_STAGE,
         action: Action::CreateFile {
             id: FileId(EXEC_SOLUTION_ERROR_FILE.to_string()),
-            readable: false,
+            readable: true,
             writeable: true,
         },
         ext: Extensions::default(),
     });
 
-    let exec_solution_step_id = invoke_request.steps.len();
-
-    // create sandbox
+    // create solution sandbox
     invoke_request.steps.push(Step {
         stage: EXEC_SOLUTION_STAGE,
         action: Action::CreateSandbox(SandboxSettings {
@@ -132,74 +174,85 @@ pub(crate) async fn exec(
                 memory: test.limits.memory(),
                 time: test.limits.time(),
                 process_count: Some(test.limits.process_count()),
-                work_dir_size: Some(test.limits.work_dir_size()),
                 ext: Extensions::default(),
             },
             name: SOLUTION_SANDBOX_NAME.to_string(),
             base_image: PathBuf::new(),
-            expose: Vec::new(),
-            work_dir: PathBuf::new(),
+            expose: vec![SharedDir {
+                host_path: PrefixedPath {
+                    prefix: PathPrefix::Extension(Extensions::make(SharedDirExtensionSource {
+                        name: EXTRA_FILES_DIR_NAME.to_string(),
+                    })?),
+                    path: "compile-out".into(),
+                },
+                sandbox_path: "/compile-out".into(),
+                mode: SharedDirectoryMode::ReadOnly,
+                create: false,
+                ext: Extensions::default(),
+            }],
+            ext: Extensions::make(SandboxSettingsExtensions {
+                image: toolchain.image.clone(),
+            })?,
+        }),
+        ext: Extensions::default(),
+    });
+
+    // produce a step for executing solution
+    let exec_solution_step_id = invoke_request.steps.len();
+
+    invoke_request.steps.push(Step {
+        stage: EXEC_SOLUTION_STAGE,
+        action: Action::ExecuteCommand(Command {
+            sandbox_name: SOLUTION_SANDBOX_NAME.to_string(),
+            argv: toolchain.spec.run_command.argv.clone(),
+            env: toolchain
+                .spec
+                .run_command
+                .env
+                .iter()
+                .map(|(k, v)| EnvironmentVariable {
+                    name: k.clone(),
+                    value: EnvVarValue::Plain(v.clone()),
+                    ext: Extensions::default(),
+                })
+                .collect(),
+            cwd: toolchain.spec.run_command.cwd.clone(),
+            stdio: Stdio {
+                stdin: FileId(TEST_DATA_INPUT_FILE.to_string()),
+                stdout: FileId(EXEC_SOLUTION_OUTPUT_FILE.to_string()),
+                stderr: FileId(EXEC_SOLUTION_ERROR_FILE.to_string()),
+                ext: Extensions::default(),
+            },
             ext: Extensions::default(),
         }),
         ext: Extensions::default(),
     });
-    // produce a step for executing solution
-    {
-        let exec_solution_step = Step {
-            stage: EXEC_SOLUTION_STAGE,
-            action: Action::ExecuteCommand(Command {
-                sandbox_name: SOLUTION_SANDBOX_NAME.to_string(),
-                argv: toolchain.spec.run_command.argv.clone(),
-                env: toolchain
-                    .spec
-                    .run_command
-                    .env
-                    .iter()
-                    .map(|(k, v)| EnvironmentVariable {
-                        name: k.clone(),
-                        value: EnvVarValue::Plain(v.clone()),
-                        ext: Extensions::default(),
-                    })
-                    .collect(),
-                cwd: toolchain.spec.run_command.cwd.clone(),
-                stdio: Stdio {
-                    stdin: FileId(TEST_DATA_INPUT_FILE.to_string()),
-                    stdout: FileId(EXEC_SOLUTION_OUTPUT_FILE.to_string()),
-                    stderr: FileId(EXEC_SOLUTION_ERROR_FILE.to_string()),
-                    ext: Extensions::default(),
-                },
-                ext: Extensions::default(),
-            }),
-            ext: Extensions::default(),
-        };
-        invoke_request.steps.push(exec_solution_step);
-    }
+
     // provide a correct answer if requested
+    let has_correct_answer;
     {
-        let source = if let Some(corr_path) = &test.correct {
+        if let Some(corr_path) = &test.correct {
             let full_path = file_ref_resolver.resolve_asset(corr_path);
-            let data = tokio::fs::read(full_path)
-                .await
-                .context("failed to read correct answer")?;
-            req_builder.intern(&data).await?
+            let source = req_builder.intern_file(&full_path).await?;
+
+            has_correct_answer = true;
+
+            invoke_request.inputs.push(Input {
+                file_id: FileId(CORRECT_ANSWER_FILE.to_string()),
+                source,
+                ext: Extensions::default(),
+            })
         } else {
-            req_builder.intern(&[]).await?
-        };
-        invoke_request.inputs.push(Input {
-            file_id: FileId(CORRECT_ANSWER_FILE.to_string()),
-            source,
-            ext: Extensions::default(),
-        })
+            has_correct_answer = false;
+        }
     }
     // generate checker feedback files
-    const CHECKER_DECISION: &str = "checker-decision";
-    const CHECKER_LOG: &str = "checker-logs";
 
     invoke_request.steps.push(Step {
         stage: EXEC_CHECKER_STAGE,
         action: Action::CreateFile {
             id: FileId(CHECKER_DECISION.to_string()),
-            readable: false,
+            readable: true,
             writeable: true,
         },
         ext: Extensions::default(),
@@ -208,52 +261,90 @@ pub(crate) async fn exec(
         stage: EXEC_CHECKER_STAGE,
         action: Action::CreateFile {
             id: FileId(CHECKER_LOG.to_string()),
-            readable: false,
+            readable: true,
             writeable: true,
         },
         ext: Extensions::default(),
     });
 
+    // create a checker sandbox
+    invoke_request.steps.push(Step {
+        stage: EXEC_CHECKER_STAGE,
+        action: Action::CreateSandbox(SandboxSettings {
+            limits: Limits {
+                memory: test.limits.memory(),
+                time: test.limits.time(),
+                process_count: Some(test.limits.process_count()),
+                ext: Extensions::default(),
+            },
+            name: CHECKER_SANDBOX_NAME.to_string(),
+            base_image: PathBuf::new(),
+            expose: vec![SharedDir {
+                host_path: PrefixedPath {
+                    prefix: PathPrefix::Extension(Extensions::make(SharedDirExtensionSource {
+                        name: EXTRA_FILES_DIR_NAME.to_string(),
+                    })?),
+                    path: "check".into(),
+                },
+                sandbox_path: "/check".into(),
+                mode: SharedDirectoryMode::ReadOnly,
+                create: false,
+                ext: Extensions::default(),
+            }],
+            ext: Extensions::make(SandboxSettingsExtensions {
+                // TODO: allow overriding
+                image: "gcr.io/distroless/cc:latest".to_string(),
+            })?,
+        }),
+        ext: Extensions::default(),
+    });
+
     // produce a step for executing checker
     let exec_checker_test_id = invoke_request.steps.len();
+
+    let mut checker_cmd = vec!["/check/checker".to_string()];
+    checker_cmd.extend_from_slice(&problem.checker_cmd);
+    let mut checker_env = vec![
+        EnvironmentVariable {
+            name: "JJS_SOL".to_string(),
+            value: EnvVarValue::File(FileId(EXEC_SOLUTION_OUTPUT_FILE.to_string())),
+            ext: Extensions::default(),
+        },
+        EnvironmentVariable {
+            name: "JJS_TEST".to_string(),
+            value: EnvVarValue::File(FileId(TEST_DATA_INPUT_FILE.to_string())),
+            ext: Extensions::default(),
+        },
+        EnvironmentVariable {
+            name: "JJS_CHECKER_OUT".to_string(),
+            value: EnvVarValue::File(FileId(CHECKER_DECISION.to_string())),
+            ext: Extensions::default(),
+        },
+        EnvironmentVariable {
+            name: "JJS_CHECKER_COMMENT".to_string(),
+            value: EnvVarValue::File(FileId(CHECKER_LOG.to_string())),
+            ext: Extensions::default(),
+        },
+    ];
+
+    if has_correct_answer {
+        checker_env.push(EnvironmentVariable {
+            name: "JJS_CORR".to_string(),
+            value: EnvVarValue::File(FileId(CORRECT_ANSWER_FILE.to_string())),
+            ext: Extensions::default(),
+        });
+    }
+
     invoke_request.steps.push(Step {
         stage: EXEC_CHECKER_STAGE,
         action: Action::ExecuteCommand(Command {
-            argv: problem.checker_cmd.clone(),
-            env: vec![
-                EnvironmentVariable {
-                    name: "JJS_CORR".to_string(),
-                    value: EnvVarValue::File(FileId(CORRECT_ANSWER_FILE.to_string())),
-                    ext: Extensions::default(),
-                },
-                EnvironmentVariable {
-                    name: "JJS_SOL".to_string(),
-                    value: EnvVarValue::File(FileId(EXEC_SOLUTION_OUTPUT_FILE.to_string())),
-                    ext: Extensions::default(),
-                },
-                EnvironmentVariable {
-                    name: "JJS_TEST".to_string(),
-                    value: EnvVarValue::File(FileId(TEST_DATA_INPUT_FILE.to_string())),
-                    ext: Extensions::default(),
-                },
-                EnvironmentVariable {
-                    name: "JJS_CHECKER_OUT".to_string(),
-                    value: EnvVarValue::File(FileId(CHECKER_DECISION.to_string())),
-                    ext: Extensions::default(),
-                },
-                EnvironmentVariable {
-                    name: "JJS_CHECKER_COMMENT".to_string(),
-                    value: EnvVarValue::File(FileId(CHECKER_LOG.to_string())),
-                    ext: Extensions::default(),
-                },
-            ]
-            .into_iter()
-            .collect(),
+            argv: checker_cmd,
+            env: checker_env,
             cwd: "/".to_string(),
             stdio: Stdio {
                 stdin: FileId(EMPTY_FILE.to_string()),
-                stdout: FileId(EMPTY_FILE.to_string()),
-                stderr: FileId(EMPTY_FILE.to_string()),
+                stdout: FileId(CHECKER_LOG.to_string()),
+                stderr: FileId(CHECKER_LOG.to_string()),
                 ext: Extensions::default(),
             },
             ext: Extensions::default(),
@@ -262,13 +353,77 @@ pub(crate) async fn exec(
         ext: Extensions::default(),
     });
 
+    // add output requests
+    invoke_request.outputs.push(OutputRequest {
+        name: CHECKER_LOG.to_string(),
+        target: OutputRequestTarget::File(FileId(CHECKER_LOG.to_string())),
+        ext: Extensions::default(),
+    });
+    invoke_request.outputs.push(OutputRequest {
+        name: CHECKER_DECISION.to_string(),
+        target: OutputRequestTarget::File(FileId(CHECKER_DECISION.to_string())),
+        ext: Extensions::default(),
+    });
+    invoke_request.outputs.push(OutputRequest {
+        name: EXEC_SOLUTION_OUTPUT_FILE.to_string(),
+        target: OutputRequestTarget::File(FileId(EXEC_SOLUTION_OUTPUT_FILE.to_string())),
+        ext: Extensions::default(),
+    });
+    invoke_request.outputs.push(OutputRequest {
+        name: EXEC_SOLUTION_ERROR_FILE.to_string(),
+        target: OutputRequestTarget::File(FileId(EXEC_SOLUTION_ERROR_FILE.to_string())),
+        ext: Extensions::default(),
+    });
+
+    Ok((
+        invoke_request,
+        StepIds {
+            exec_checker: exec_checker_test_id,
+            exec_solution: exec_solution_step_id,
+        },
+    ))
+}
+
+/// Runs Artifact on one test and produces output
+pub(crate) async fn exec(
+    toolchain: &toolchain_loader::Toolchain,
+    problem: &pom::Problem,
+    client: invoker_client::Client,
+    file_ref_resolver: &crate::FileRefResolver,
+    test_id: pom::TestId,
+    settings: &crate::Settings,
+    built: &BuiltRun,
+) -> anyhow::Result<ExecOutcome> {
+    let req_builder = crate::request_builder::RequestBuilder::new();
+
+    let test = problem
+        .tests
+        .get(test_id.to_idx())
+        .context("unknown test")?;
+
+    let (invoke_request, step_ids) = create_request(
+        toolchain,
+        problem,
+        file_ref_resolver,
+        test,
+        &req_builder,
+        built,
+    )
+    .await
+    .context("failed to prepare invoke request")?;
+
     let response = client.instance()?.call(invoke_request).await?;
 
-    if let Some(dir) = &debug.checker_logs {
-        let checker_out_file = tokio::fs::File::create(dir.join(test_id.to_string())).await?;
-        let mut checker_out_file = tokio::io::BufWriter::new(checker_out_file);
+    tracing::debug!("parsing invoker response");
+
+    if let Some(dir) = &settings.checker_logs {
+        tracing::debug!("saving checker log");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .context("failed to create checker logs directory")?;
+        let checker_out_file = dir.join(test_id.get().to_string());
         let checker_logs = req_builder.read_output(&response, CHECKER_LOG).await?;
-        checker_out_file.write_all(&checker_logs).await?;
+        tokio::fs::write(checker_out_file, checker_logs).await?;
     }
 
     let make_return_value_for_judge_fault = || {
@@ -286,11 +441,11 @@ pub(crate) async fn exec(
     let solution_command_result = {
         let res = response
             .actions
-            .get(exec_solution_step_id)
+            .get(step_ids.exec_solution)
             .context("bug: invalid index")?;
         match res {
             ActionResult::ExecuteCommand(cmd) => cmd,
-            _ => anyhow::bail!("bug: unexpected action result"),
+            _ => anyhow::bail!("bug: unexpected action result for exec solution step"),
         }
     };
 
@@ -304,11 +459,11 @@ pub(crate) async fn exec(
     let checker_command_result = {
         let res = response
             .actions
-            .get(exec_checker_test_id)
+            .get(step_ids.exec_checker)
             .context("bug: invalid index")?;
         match res {
             ActionResult::ExecuteCommand(cmd) => cmd,
-            _ => anyhow::bail!("bug: unexpected action result"),
+            _ => anyhow::bail!("bug: unexpected action result for exec checker step"),
         }
     };
 

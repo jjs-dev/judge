@@ -12,8 +12,11 @@ services:
         volumes:
             - problems:/etc/jjs/problems:ro
             - toolchains:/etc/jjs/toolchains:ro
+            - judge_logs:/var/log/judges
         ports: 
             - '1789:1789'
+        environment: 
+            RUST_LOG: info,warp::filters::trace=warn,judge=debug,processor=debug
     setup:
         build: setup
         volumes:
@@ -25,15 +28,32 @@ services:
         image: ghcr.io/jjs-dev/jjs-invoker:latest
         # TODO: investigate why this is required
         privileged: true
+        # only needed for interactive debugging
+        # pid: host
         environment: 
-            RUST_LOG: info,invoker=debug
+            RUST_LOG: info,invoker=trace,minion=debug,minion::linux::sandbox::watchdog=info
         command:
             - --shim=http://shim:8001
             - --listen-address=tcp://0.0.0.0:8000
             - --work-dir=/var/invoker/work
+            # Debugging flags; uncomment if needed
+            # - --debug-leak-sandboxes
+            # - --interactive-debug-url=http://invoker-strace-debug:8000/debug
         volumes: 
             - pulled:/var/shim-share
+            - invoker_work:/var/invoker/work
+            - invoker_debug:/var/invoker/debug
         expose: 
+            - 8000
+    invoker-strace-debug:
+        image: ghcr.io/jjs-dev/jjs-invoker-strace-debugger:latest
+        privileged: true
+        pid: host
+        environment:
+            RUST_LOG: info,strace_debug=debug
+        volumes:
+            - strace:/var/jjs/debug/strace
+        expose:
             - 8000
     shim:
         image: ghcr.io/jjs-dev/jjs-invoker-shim:latest
@@ -50,7 +70,27 @@ services:
             - 8001
         healthcheck:
             disable: true
+    debug:
+        image: ubuntu:focal
+        command:
+            - tail
+            - -f
+            - /dev/null
+        volumes:
+            - pulled:/mnt/pulled-toolchains
+            - problems:/mnt/problems
+            - toolchains:/mnt/toolchains
+            - invoker_work:/mnt/invoker
+            - invoker_debug:/mnt/invoker-debug
+            - judge_logs:/mnt/judge-logs
+            - strace:/mnt/strace
+        # only needed for interactive debugging (TODO: is it actually needed?)
+        # pid: host
 volumes:
     pulled: {}
     problems: {}
     toolchains: {}
+    invoker_work: {}
+    invoker_debug: {}
+    judge_logs: {}
+    strace: {}

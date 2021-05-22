@@ -64,16 +64,17 @@ pub struct Clients {
     pub invokers: invoker_client::Client,
 }
 
-/// Debugging settings
-pub struct DebugDumps {
-    /// ${checker_logs}/${test_id} will contain checker log
+/// Settings are global rather then come from a request.
+#[derive(Clone)]
+pub struct Settings {
+    /// ${checker_logs}/${job_id}/${test_id} will contain checker log
     /// for a test test_id.
     pub checker_logs: Option<PathBuf>,
 }
 
 /// The main function, which responds to a single request.
-#[tracing::instrument(skip(req, clients))]
-pub fn judge(req: Request, clients: Clients) -> JobProgress {
+#[tracing::instrument(skip(req, clients, settings))]
+pub fn judge(req: Request, clients: Clients, settings: Settings) -> JobProgress {
     let (done_tx, done_rx) = oneshot::channel();
     let (events_tx, events_rx) = mpsc::channel(1);
     tokio::task::spawn(
@@ -85,7 +86,7 @@ pub fn judge(req: Request, clients: Clients) -> JobProgress {
                 debug_dump_dir: None,
             };
 
-            let res = do_judge(req, events_tx, clients, &mut protocol_sender).await;
+            let res = do_judge(req, events_tx, clients, &mut protocol_sender, settings).await;
             if let Err(err) = &res {
                 tracing::warn!(err = %format_args!("{:#}", err),"judging failed, responding with judge fault");
                 protocol_sender
@@ -123,6 +124,7 @@ impl JobProgress {
             Err(error) => JudgeOutcome::Fault { error },
         }
     }
+
     /// Returns next event.
     pub async fn event(&mut self) -> Option<Event> {
         self.events_rx.recv().await
@@ -134,6 +136,7 @@ async fn do_judge(
     tx: mpsc::Sender<Event>,
     clients: Clients,
     protocol_sender: &mut ProtocolSender,
+    settings: Settings,
 ) -> anyhow::Result<()> {
     tracing::info!("loading problem");
     let (problem, problem_assets) = clients
@@ -144,7 +147,7 @@ async fn do_judge(
         .context("problem not found")?;
 
     let file_ref_resolver = FileRefResolver {
-        problem_dir: problem_assets.clone(),
+        problem_assets_dir: problem_assets.clone(),
     };
 
     tracing::info!("loading toolchain");
@@ -155,23 +158,37 @@ async fn do_judge(
         .context("failed to find toolchain")?;
 
     tracing::info!("compiling");
-    let compile_res = compile::compile(&req, &toolchain, clients.invokers.clone()).await?;
-    if let Err(status) = compile_res.result {
-        tracing::info!("compilation failed");
-        protocol_sender
-            .send_fake_logs(status, &compile_res.log)
-            .await;
-        return Ok(());
-    }
+    let mut compile_res = compile::compile(&req, &toolchain, clients.invokers.clone()).await?;
+    let built = match &mut compile_res.result {
+        Ok(b) => b.take().expect("compile does not return none"),
+        Err(status) => {
+            tracing::info!("compilation failed");
+            protocol_sender
+                .send_fake_logs(status.clone(), &compile_res.log)
+                .await;
+            return Ok(());
+        }
+    };
+    let compile_res = compile_res;
     tracing::info!("running tests");
+
     let valuer_config = match &problem.valuer {
-        Valuer::Child(child) => ClientConfig::Child(ChildClientConfig {
-            exe: file_ref_resolver.resolve_asset(&child.exe),
-            args: child.extra_args.clone(),
-            // TODO: support overriding
-            log_file: "/dev/null".into(),
-            current_dir: problem_assets.clone(),
-        }),
+        Valuer::Child(child) => {
+            let current_dir = match &child.current_dir {
+                Some(p) => file_ref_resolver.resolve_asset(p),
+                None => {
+                    tracing::debug!(
+                        "valuer current_directory unset in problem manifest, defaulting to problem assets directory"
+                    );
+                    problem_assets.clone()
+                }
+            };
+            ClientConfig::Child(ChildClientConfig {
+                exe: file_ref_resolver.resolve_asset(&child.exe),
+                args: child.extra_args.clone(),
+                current_dir,
+            })
+        }
     };
     let mut valuer = valuer_client::ValuerClient::new(&valuer_config)
         .await
@@ -194,23 +211,22 @@ async fn do_judge(
                     tx.send(Event::LiveTest(tid.get())).await.ok();
                 }
 
-                let dbg_dumps = DebugDumps { checker_logs: None };
-
-                let judge_response = exec_test::exec(
+                let test_result = exec_test::exec(
                     &toolchain,
                     &problem,
                     clients.invokers.clone(),
                     &file_ref_resolver,
                     tid,
-                    &dbg_dumps,
+                    &settings,
+                    &built,
                 )
                 .await
                 .with_context(|| format!("failed to judge solution on test {}", tid))?;
-                test_results.push((tid, judge_response.clone()));
+                test_results.push((tid, test_result.clone()));
                 valuer
                     .notify_test_done(TestDoneNotification {
                         test_id: tid,
-                        test_status: judge_response.status,
+                        test_status: test_result.status,
                     })
                     .await
                     .with_context(|| {
@@ -276,13 +292,13 @@ fn describe_command_result(limits: &Limits, data: &CommandResult) -> CommandStat
 }
 
 struct FileRefResolver {
-    problem_dir: PathBuf,
+    problem_assets_dir: PathBuf,
 }
 
 impl FileRefResolver {
     fn resolve_asset(&self, short_path: &pom::FileRef) -> PathBuf {
         let root: Cow<Path> = match short_path.root {
-            pom::FileRefRoot::Problem => self.problem_dir.clone().into(),
+            pom::FileRefRoot::Problem => self.problem_assets_dir.clone().into(),
             pom::FileRefRoot::Root => Path::new("/").into(),
         };
 

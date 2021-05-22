@@ -43,6 +43,7 @@ impl ClientBuilder {
     pub fn add(&mut self, pool: Pool) {
         self.pools.push(pool.0);
     }
+
     /// Builds a client
     pub fn build(self) -> Client {
         Client {

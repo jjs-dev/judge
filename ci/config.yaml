@@ -1,3 +1,4 @@
 dockerImages:
   - judge
 buildTimeoutMinutes: 15
+noE2e: true

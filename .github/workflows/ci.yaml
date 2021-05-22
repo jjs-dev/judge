@@ -8,44 +8,6 @@ name: ci
     - trying
     - master
 jobs:
-  e2e-build:
-    env:
-      DOCKER_BUILDKIT: "1"
-    runs-on: ubuntu-20.04
-    timeout-minutes: 15
-    steps:
-    - name: Fetch sources
-      uses: actions/checkout@v2
-    - name: Setup cache
-      uses: Swatinem/rust-cache@v1
-    - name: Build e2e artifacts
-      run: bash ci/e2e-build.sh
-    - name: Upload e2e artifacts
-      uses: actions/upload-artifact@v2
-      with:
-        name: e2e-artifacts
-        path: e2e-artifacts
-        retention-days: "2"
-  e2e-run:
-    needs: e2e-build
-    runs-on: ubuntu-20.04
-    timeout-minutes: 15
-    steps:
-    - name: Fetch sources
-      uses: actions/checkout@v2
-    - name: Download e2e artifacts
-      uses: actions/download-artifact@v2
-      with:
-        name: e2e-artifacts
-        path: e2e-artifacts
-    - name: Execute tests
-      run: bash ci/e2e-run.sh
-    - name: Upload logs
-      uses: actions/upload-artifact@v2
-      with:
-        name: e2e-logs
-        path: e2e-logs
-        retention-days: "2"
   misspell:
     runs-on: ubuntu-20.04
     timeout-minutes: 2
@@ -100,12 +62,12 @@ jobs:
     steps:
     - name: Fetch sources
       uses: actions/checkout@v2
-    - name: Install nightly toolchain
+    - name: Install stable toolchain
       uses: actions-rs/toolchain@v1
       with:
         components: clippy,rustfmt
         override: "true"
-        toolchain: nightly
+        toolchain: stable
     - name: Setup cache
       uses: Swatinem/rust-cache@v1
     - id: cargo_udeps
@@ -122,7 +84,7 @@ jobs:
         mkdir -p ~/udeps
         cp $( which cargo-udeps ) ~/udeps
     - name: Run cargo-udeps
-      run: "\nexport PATH=~/udeps:$PATH  \ncargo udeps \n"
+      run: "\nexport PATH=~/udeps:$PATH\nexport RUSTC_BOOTSTRAP=1\ncargo udeps \n"
   rustfmt:
     name: rustfmt
     runs-on: ubuntu-20.04

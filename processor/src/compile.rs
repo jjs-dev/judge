@@ -1,24 +1,31 @@
 use crate::CommandStatus;
+use anyhow::Context;
 use invoker_api::{
     invoke::{
         Action, ActionResult, Command, EnvVarValue, EnvironmentVariable, Extensions, FileId,
-        InvokeRequest, Limits, OutputRequest, OutputRequestTarget, SandboxSettings, SharedDir,
-        SharedDirectoryMode, Stdio, Step,
+        InvokeRequest, Limits, OutputRequest, OutputRequestTarget, PathPrefix, PrefixedPath,
+        SandboxSettings, SharedDir, SharedDirectoryMode, Stdio, Step, VolumeSettings,
     },
-    shim::{SandboxSettingsExtensions, EXTRA_FILES_DIR_NAME},
+    shim::{ExtraFile, SandboxSettingsExtensions, EXTRA_FILES_DIR_NAME},
 };
 use std::{collections::HashMap, path::PathBuf};
 use uuid::Uuid;
 use valuer_api::{status_codes, Status, StatusKind};
 
+pub(crate) struct BuiltRun {
+    pub(crate) binary: Vec<u8>,
+}
+
 pub(crate) struct BuildOutcome {
-    pub(crate) result: Result<(), Status>,
+    // Wrapped in option to allow stealing
+    pub(crate) result: Result<Option<BuiltRun>, Status>,
     pub(crate) log: String,
 }
 
 //const FILE_ID_SOURCE: &str = "run-source";
 const FILE_ID_EMPTY: &str = "empty";
 const SANDBOX_NAME: &str = "compile-sandbox";
+const VOLUME_NAME: &str = "work";
 
 pub(crate) async fn compile(
     req: &crate::Request,
@@ -33,10 +40,16 @@ pub(crate) async fn compile(
         let mut ef = HashMap::new();
         ef.insert(
             toolchain.spec.filename.clone(),
-            req_builder.intern(&req.run_source).await?,
+            ExtraFile {
+                contents: req_builder.intern(&req.run_source).await?,
+                executable: false,
+            },
         );
         s.insert("Run.SourceFilePath".to_string(), source_file_path.clone());
-        s.insert("Run.BinaryFilePath".to_string(), "/jjs/bin".to_string());
+        s.insert(
+            "Run.BinaryFilePath".to_string(),
+            "/compile-output/bin".to_string(),
+        );
         (s, ef)
     };
     let mut invoke_request = InvokeRequest {
@@ -58,11 +71,20 @@ pub(crate) async fn compile(
         ext: Extensions::default(),
     });
 
+    invoke_request.steps.push(Step {
+        stage: 0,
+        action: Action::CreateVolume(VolumeSettings {
+            name: VOLUME_NAME.to_string(),
+            limit: toolchain.spec.limits.work_dir_size,
+            ext: Extensions::default(),
+        }),
+        ext: Extensions::default(),
+    });
+
     let limits = Limits {
         memory: toolchain.spec.limits.memory(),
         time: toolchain.spec.limits.time(),
         process_count: toolchain.spec.limits.process_count,
-        work_dir_size: toolchain.spec.limits.work_dir_size,
         ext: Extensions::default(),
     };
     invoke_request.steps.push(Step {
@@ -71,14 +93,32 @@ pub(crate) async fn compile(
             limits: limits.clone(),
             name: SANDBOX_NAME.to_string(),
             base_image: PathBuf::new(),
-            expose: vec![SharedDir {
-                host_path: EXTRA_FILES_DIR_NAME.into(),
-                sandbox_path: "/compile-input".into(),
-                mode: SharedDirectoryMode::ReadOnly,
-                create: false,
-                ext: Extensions::default(),
-            }],
-            work_dir: PathBuf::new(),
+            expose: vec![
+                SharedDir {
+                    host_path: PrefixedPath {
+                        prefix: PathPrefix::Extension(Extensions::make(
+                            invoker_api::shim::SharedDirExtensionSource {
+                                name: EXTRA_FILES_DIR_NAME.to_string(),
+                            },
+                        )?),
+                        path: PathBuf::new(),
+                    },
+                    sandbox_path: "/compile-input".into(),
+                    mode: SharedDirectoryMode::ReadOnly,
+                    create: false,
+                    ext: Extensions::default(),
+                },
+                SharedDir {
+                    host_path: PrefixedPath {
+                        prefix: PathPrefix::Volume(VOLUME_NAME.to_string()),
+                        path: PathBuf::new(),
+                    },
+                    sandbox_path: "/compile-output".into(),
+                    mode: SharedDirectoryMode::ReadWrite,
+                    create: false,
+                    ext: Extensions::default(),
+                },
+            ],
             ext: Extensions::make(SandboxSettingsExtensions {
                 image: toolchain.image.clone(),
             })?,
@@ -121,7 +161,7 @@ pub(crate) async fn compile(
                     ext: Extensions::default(),
                 })
                 .collect(),
-            cwd: "/jjs".to_string(),
+            cwd: "/".to_string(),
             stdio: Stdio {
                 stdin: FileId(FILE_ID_EMPTY.to_string()),
                 stdout: FileId(stdout_file_id.clone()),
@@ -149,6 +189,16 @@ pub(crate) async fn compile(
             ext: Extensions::default(),
         });
     }
+
+    invoke_request.outputs.push(OutputRequest {
+        name: "artifact".to_string(),
+        target: OutputRequestTarget::Path(PrefixedPath {
+            prefix: PathPrefix::Volume(VOLUME_NAME.to_string()),
+            path: "bin".into(),
+        }),
+        ext: Extensions::default(),
+    });
+
     let response = client.instance()?.call(invoke_request).await?;
     let mut compile_log = String::new();
     for (step_no, pos) in command_steps.into_iter().enumerate() {
@@ -185,8 +235,12 @@ pub(crate) async fn compile(
             log: compile_log,
         });
     }
+    let binary = req_builder
+        .read_output(&response, "artifact")
+        .await
+        .context("failed to export compiled binary")?;
     Ok(BuildOutcome {
-        result: Ok(()),
+        result: Ok(Some(BuiltRun { binary })),
         log: compile_log,
     })
 }
