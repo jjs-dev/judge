@@ -1321,6 +1321,8 @@ dependencies = [
  "judge-apis",
  "pom",
  "problem-loader",
+ "rand 0.8.3",
+ "rand_chacha 0.3.0",
  "serde",
  "serde_json",
  "strum",
