@@ -1,9 +1,9 @@
 //! Processor is part of judge that deals with a single run (and it doesn't
 //! care where have it come from).
 
-pub mod fake;
 mod compile;
 mod exec_test;
+pub mod fake;
 mod request_builder;
 mod transform_judge_log;
 
