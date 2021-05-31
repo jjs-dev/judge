@@ -21,3 +21,5 @@ serde_json = "1.0.64"
 valuer-client = { path = "../valuer-client" }
 strum = { version = "0.20.0", features = ["derive"] }
 base64 = "0.13.0"
+rand = "0.8.3"
+rand_chacha = "0.3.0"

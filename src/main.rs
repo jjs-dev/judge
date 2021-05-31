@@ -30,6 +30,11 @@ struct Args {
     /// Directory containing judging logs. Set to `/dev/null` to disable logging
     #[clap(long, default_value = "/var/log/judges")]
     logs: PathBuf,
+    /// Enable fake mode.
+    /// In this mode judge never loads problems or toolchains and just
+    /// generates random data for requests
+    #[clap(long)]
+    fake: bool,
 }
 
 async fn create_clients(args: &Args) -> anyhow::Result<processor::Clients> {
@@ -54,18 +59,10 @@ async fn create_clients(args: &Args) -> anyhow::Result<processor::Clients> {
     })
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-    let args: Args = Clap::parse();
+async fn initialize_normal(args: &Args) -> anyhow::Result<rest::ServeKind> {
     let clients = create_clients(&args)
         .await
         .context("failed to initialize dependency clients")?;
-    tracing::info!("Running REST API");
-    let cfg = rest::RestConfig { port: args.port };
-
     let settings = {
         let checker_logs = match &args.logs {
             p if p == Path::new("/dev/null") => (None),
@@ -81,6 +78,30 @@ async fn main() -> anyhow::Result<()> {
         }
         processor::Settings { checker_logs }
     };
-    rest::serve(cfg, clients, settings).await?;
+    Ok(rest::ServeKind::Normal { settings, clients })
+}
+
+fn initialize_fake() -> rest::ServeKind {
+    rest::ServeKind::Fake {
+        settings: processor::fake::FakeSettings {},
+    }
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+    let args: Args = Clap::parse();
+    tracing::info!("Running REST API");
+    let cfg = rest::RestConfig { port: args.port };
+
+    let serve_config = if args.fake {
+        initialize_fake()
+    } else {
+        initialize_normal(&args).await?
+    };
+
+    rest::serve(cfg, serve_config).await?;
     Ok(())
 }
