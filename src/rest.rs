@@ -42,10 +42,19 @@ impl JudgeJob {
     }
 }
 
+pub enum ServeKind {
+    Normal {
+        clients: processor::Clients,
+        settings: processor::Settings,
+    },
+    Fake {
+        settings: processor::fake::FakeSettings,
+    },
+}
+
 struct State {
     judge: RwLock<HashMap<Uuid, Arc<Mutex<JudgeJob>>>>,
-    clients: processor::Clients,
-    settings: processor::Settings,
+    kind: ServeKind,
 }
 
 async fn start_job(
@@ -58,15 +67,21 @@ async fn start_job(
         run_source: req.run_source.0,
     };
     let job_id = Uuid::new_v4();
-    let mut settings = state.settings.clone();
-    {
-        let mut job_id_s = Uuid::encode_buffer();
-        let job_id_s = job_id.to_hyphenated().encode_lower(&mut job_id_s);
-        if let Some(p) = &mut settings.checker_logs {
-            p.push(&*job_id_s);
+
+    let mut progress = match &state.kind {
+        ServeKind::Normal { settings, clients } => {
+            let mut settings = settings.clone();
+            {
+                let mut job_id_s = Uuid::encode_buffer();
+                let job_id_s = job_id.to_hyphenated().encode_lower(&mut job_id_s);
+                if let Some(p) = &mut settings.checker_logs {
+                    p.push(&*job_id_s);
+                }
+            }
+            processor::judge(proc_request, clients.clone(), settings)
         }
-    }
-    let mut progress = processor::judge(proc_request, state.clients.clone(), settings);
+        ServeKind::Fake { settings } => processor::fake::judge(proc_request, settings.clone()),
+    };
     let job = JudgeJob {
         id: job_id,
         live_test: None,
@@ -154,16 +169,11 @@ async fn get_job_judge_log(
 }
 
 /// Serves api
-#[tracing::instrument(skip(cfg, clients, settings))]
-pub async fn serve(
-    cfg: RestConfig,
-    clients: processor::Clients,
-    settings: processor::Settings,
-) -> anyhow::Result<()> {
+#[tracing::instrument(skip(cfg, kind))]
+pub async fn serve(cfg: RestConfig, kind: ServeKind) -> anyhow::Result<()> {
     let state = Arc::new(State {
         judge: RwLock::new(HashMap::new()),
-        clients,
-        settings,
+        kind,
     });
     let state2 = state.clone();
     let route_create_job = warp::post()

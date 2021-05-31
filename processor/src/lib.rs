@@ -3,6 +3,7 @@
 
 mod compile;
 mod exec_test;
+pub mod fake;
 mod request_builder;
 mod transform_judge_log;
 
