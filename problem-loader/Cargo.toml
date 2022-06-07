@@ -16,6 +16,6 @@ mongodb = { git = "https://github.com/mongodb/mongo-rust-driver" }
 url = "2.2.1"
 bson = "2.0.0-beta"
 flate2 = "1.0.20"
-tar = "0.4.33"
+tar = "0.4.36"
 serde = "1.0.125"
 tracing = "0.1.25"
